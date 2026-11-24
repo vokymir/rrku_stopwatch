@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ranger stopwatch</title>
+<style>
+:root{--bg:#eef0ec;--fg:#16201a;--card:#fff;--ac:#14532d;--bd:#c4cbc1;--run:#ffd84d;--runfg:#231b00;--warn:#b3261e}
+@media(prefers-color-scheme:dark){:root{--bg:#121714;--fg:#e6ede7;--card:#1c241f;--ac:#3fa56b;--bd:#34413a;--run:#e0b400;--warn:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--bg);z-index:5}
+header h1{font-size:1rem;margin:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#st{font-size:.8rem;opacity:.75}
+main{max-width:640px;margin:0 auto;padding:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;cursor:pointer;touch-action:manipulation}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+input,textarea{width:100%;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:9px;margin-top:4px}
+label{display:block;margin:12px 0;font-weight:600}label small{font-weight:400;opacity:.7;display:block}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+h2{font-size:1.05rem;margin:22px 0 4px}
+.list a{display:block;padding:16px;margin:8px 0;background:var(--card);border:1px solid var(--bd);border-radius:10px;color:inherit;text-decoration:none;font-weight:600}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
+.tabs button.on{background:var(--fg);color:var(--bg)}
+#clk{font-size:2.6rem;font-weight:700;font-variant-numeric:tabular-nums;text-align:center;margin:6px 0}
+.g{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.team{min-height:84px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:6px;overflow:hidden}
+.team b{font-size:1.5rem;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team .t{font-size:.85rem;font-variant-numeric:tabular-nums}
+.team.off{opacity:.45}
+.team.run{background:var(--run);color:var(--runfg);border-color:var(--run)}
+.team.stop{background:var(--ac);color:#fff;border-color:var(--ac)}
+details{margin-top:18px}summary{cursor:pointer;font-weight:600}
+.ev{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd);font-size:.85rem}.ev span{flex:1}
+.ev button{padding:4px 8px}
+.warn{color:var(--warn)}
+</style></head><body>
+<header><h1 id="ttl">Ranger stopwatch</h1><span id="st"></span><button onclick="location.hash=''">Home</button><button onclick="location.hash='setup'">Setup</button></header>
+<main id="app"></main>
+<script>
+const $=s=>document.querySelector(s),app=$('#app'),K='rr1';
+const rng=n=>Array.from({length:n},(_,i)=>''+(i+1));
+// Edit these to change the "defaults" button. Team counts for ER and RR are placeholders.
+const DEF={name:'Ranger roku 2027',cats:[{name:'DR',teams:rng(8)},{name:'AR',teams:rng(23)},{name:'ER',teams:rng(10)},{name:'RR',teams:rng(10)}],
+ discs:['Fyzická zdatnost (běh)','Rozdělání ohně','Biblické znalosti','Uzlování','Morseovka']};
+let S=Object.assign({config:{name:'',cats:[],discs:[]},events:[],server:'',secret:'',pin:'',on:false,bound:'',cid:Math.random().toString(36).slice(2),off:0,cat:0},JSON.parse(localStorage.getItem(K)||'{}'));
+S.ok=false;
+const save=()=>{try{localStorage.setItem(K,JSON.stringify(S))}catch(e){alert('Cannot save to local storage: '+e.message)}};
+const now=()=>Date.now()+S.off,uid=()=>Math.random().toString(36).slice(2)+Date.now().toString(36);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=ms=>{const s=Math.max(0,ms)/1000,h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=(s%60).toFixed(1).padStart(4,'0');return (h?h+':'+String(m).padStart(2,'0'):m)+':'+x};
+const disc=()=>S.config.discs[+location.hash.slice(3)],cat=()=>S.config.cats[S.cat]||S.config.cats[0];
+
+/* ---- event log: append-only, so syncing is just a union by id ---- */
+function live(){const v=new Set(S.events.filter(e=>e.k==='void').map(e=>e.ref));return S.events.filter(e=>e.k!=='void'&&!v.has(e.id)).sort((a,b)=>a.ts-b.ts)}
+const startOf=(L,d,c)=>L.filter(e=>e.k==='start'&&e.d===d&&e.c===c).pop();
+function calc(L,d,c,t,n){const st=startOf(L,d,c);if(!st)return{s:'off',ms:0};let ms=0,from=st.ts,run=true;
+ for(const e of L)if(e.ts>=st.ts&&e.d===d&&e.c===c&&e.t===t){if(e.k==='stop'&&run){ms+=e.ts-from;run=false}else if(e.k==='resume'&&!run){from=e.ts;run=true}}
+ if(run)ms+=n-from;return{s:run?'run':'stop',ms}}
+function add(o){const e={id:uid(),ts:now(),cid:S.cid,...o};S.events.push(e);save();push([e]);render()}
+function merge(evs){const ids=new Set(S.events.map(e=>e.id));let n=0;for(const e of evs)if(!ids.has(e.id)){S.events.push(e);n++}if(n){save();draw()}}
+const draw=()=>{if(location.hash!=='#setup')render()};
+
+/* ---- server sync ---- */
+const base=()=>S.server.replace(/\/$/,'')+'/api/c/'+encodeURIComponent(S.secret);
+async function api(p,m,b,h){const r=await fetch(base()+p,{method:m||'GET',headers:{'content-type':'application/json',...h},body:b?JSON.stringify(b):undefined});
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(j.error||r.status),{code:r.status});return j}
+function status(m){S.msg=m||(S.on?(S.ok?'● synced':'○ offline, will sync'):'local only');const e=$('#st');if(e)e.textContent=S.msg}
+async function push(evs){if(!S.on)return;if(!S.ok){S.dirty=1;return}try{await api('/events','POST',{events:evs,cid:S.cid})}catch{S.dirty=1}}
+async function sync(){try{await api('/events','POST',{events:S.events,cid:S.cid});S.dirty=0}catch{S.dirty=1}}
+let es;
+function stream(){es&&es.close();es=new EventSource(base()+'/stream?cid='+S.cid);
+ es.onmessage=m=>{const d=JSON.parse(m.data);if(d.type==='events')merge(d.events);if(d.type==='config'){S.config=d.config;save();draw()}};
+ es.onopen=async()=>{S.ok=true;try{const j=await api('');S.off=j.now-Date.now();merge(j.events);await sync()}catch{}status(S.msg=0)};
+ es.onerror=()=>{S.ok=false;status(0)}}
+async function connect(){
+ try{let j,created=0;
+  try{j=await api('')}catch(e){if(e.code!==404)throw e;const r=await api('','POST',{config:S.config});S.pin=r.pin;created=1;
+   alert('Contest created on the server.\nPIN for changing the configuration (write it down, shown only once):\n\n'+r.pin);j={config:S.config,events:[],now:Date.now()}}
+  const key=S.server+'|'+S.secret;
+  if(!created&&S.bound!==key){if(S.events.length&&!confirm('Replace the times stored on this device with this contest from the server?'))return status('Cancelled');S.events=[];S.pin=''}
+  S.bound=key;S.on=true;S.ok=true;S.off=j.now-Date.now();S.config=j.config;merge(j.events);stream();status(0)
+ }catch(e){S.ok=false;status('Server error: '+e.message)}
+ save()}
+setInterval(()=>{if(S.on&&!S.ok)connect();else if(S.dirty&&S.ok)sync()},10000);
+
+/* ---- setup ---- */
+const parseCats=t=>t.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{const i=l.indexOf(':'),r=i<0?'':l.slice(i+1).trim();
+ return{name:(i<0?l:l.slice(0,i)).trim(),teams:/^\d+$/.test(r)?rng(+r):r.split(',').map(x=>x.trim()).filter(Boolean)}});
+const catsTxt=cs=>cs.map(c=>c.name+': '+(c.teams.every((t,i)=>t===''+(i+1))?c.teams.length:c.teams.join(', '))).join('\n');
+const readForm=()=>{S.config={name:$('#f_n').value.trim(),cats:parseCats($('#f_c').value),discs:$('#f_d').value.split('\n').map(x=>x.trim()).filter(Boolean)};S.server=$('#f_s').value.trim();S.secret=$('#f_k').value.trim()};
+const fillForm=c=>{$('#f_n').value=c.name;$('#f_c').value=catsTxt(c.cats);$('#f_d').value=c.discs.join('\n')};
+function setup(){const c=S.config;app.innerHTML=`
+<label>Contest name<input id="f_n" value="${esc(c.name)}"></label>
+<label>Categories<small>One per line: “AR: 23” (23 numbered teams) or “AR: Wolves, Foxes”. Names must be unique.</small><textarea id="f_c" rows="5">${esc(catsTxt(c.cats))}</textarea></label>
+<label>Disciplines<small>One per line</small><textarea id="f_d" rows="6">${esc(c.discs.join('\n'))}</textarea></label>
+<div class="row"><button class="p" data-a="cfg">Save configuration</button><button data-a="def">Fill Ranger roku defaults</button></div>
+<div class="row"><button data-a="cpy">Copy configuration</button><button data-a="imp">Import configuration</button></div>
+<h2>Server sync (optional)</h2>
+<label>Server URL<small>Leave empty to work only on this device</small><input id="f_s" value="${esc(S.server)}" placeholder="${esc(location.origin.startsWith('http')?location.origin:'https://example.org')}" inputmode="url"></label>
+<label>Secret<small>Share it with everyone who may record times</small><input id="f_k" value="${esc(S.secret)}" maxlength="12" autocapitalize="off"></label>
+<div class="row"><button data-a="gen">Generate secret</button><button class="p" data-a="con">Connect</button><button data-a="dis">Disconnect</button></div>
+<p>${S.pin?'Your configuration PIN: <b>'+esc(S.pin)+'</b>':''}</p>`}
+const home=()=>{app.innerHTML=S.config.discs.length?`<div class="list">${S.config.discs.map((d,i)=>`<a href="#d/${i}">${esc(d)}</a>`).join('')}</div>`:'<p>No disciplines yet. Open Setup to add them or fill in the defaults.</p>'};
+
+/* ---- stopwatch ---- */
+function sw(i){const d=disc(),cs=S.config.cats;if(d==null||!cs.length)return home();if(S.cat>=cs.length)S.cat=0;
+ const c=cat(),L=live(),st=startOf(L,d,c.name),n=now();
+ const ev=S.events.filter(e=>e.d===d).sort((a,b)=>b.ts-a.ts).slice(0,40),v=new Set(S.events.filter(e=>e.k==='void').map(e=>e.ref));
+ app.innerHTML=`<h2 style="margin-top:0">${esc(d)}</h2>
+<div class="tabs">${cs.map((x,j)=>`<button class="${j==S.cat?'on':''}" data-a="cat" data-i="${j}">${esc(x.name)}</button>`).join('')}</div>
+<div id="clk">${st?fmt(n-st.ts):'0:00.0'}</div>
+<div class="row" style="justify-content:center"><button class="p" data-a="start">${st?'Restart '+esc(c.name):'Start '+esc(c.name)}</button></div>
+<div class="g">${c.teams.map((t,j)=>{const r=calc(L,d,c.name,t,n);return `<button class="team ${r.s}" data-a="tap" data-i="${j}"><b>${esc(t)}</b><span class="t">${r.s==='off'?'':fmt(r.ms)}</span></button>`}).join('')}</div>
+<div class="row"><button data-a="copy">Copy results for Sheets</button><button data-a="csv">Download full log (CSV)</button></div>
+<details><summary>Recent entries (tap Remove to undo a mistake)</summary>${ev.filter(e=>e.k!=='void').map(e=>`<div class="ev" style="${v.has(e.id)?'opacity:.4;text-decoration:line-through':''}"><span>${new Date(e.ts).toLocaleTimeString()} ${e.k} ${esc(e.c)} ${e.t?esc(e.t):''}</span>${v.has(e.id)?'':`<button data-a="rm" data-id="${e.id}">Remove</button>`}</div>`).join('')||'<p>Nothing yet.</p>'}</details>`}
+setInterval(()=>{if(!location.hash.startsWith('#d/'))return;const d=disc(),c=cat();if(!d||!c)return;const L=live(),n=now(),st=startOf(L,d,c.name);
+ if(st&&$('#clk'))$('#clk').textContent=fmt(n-st.ts);
+ document.querySelectorAll('.team.run .t').forEach(e=>{const j=e.parentNode.dataset.i;e.textContent=fmt(calc(L,d,c.name,c.teams[j],n).ms)})},200);
+
+function tap(j){const d=disc(),c=cat(),t=c.teams[j],r=calc(live(),d,c.name,t,now());if(r.s==='off')return;navigator.vibrate&&navigator.vibrate(30);
+ if(r.s==='run')add({k:'stop',d,c:c.name,t});else if(confirm('Team '+t+' is stopped at '+fmt(r.ms)+'.\nResume its clock?'))add({k:'resume',d,c:c.name,t})}
+function rows(kind){const d=disc(),L=live(),n=now();
+ if(kind==='res'){const r=[['category','team','time','ms','state']];for(const c of S.config.cats)for(const t of c.teams){const x=calc(L,d,c.name,t,n);r.push([c.name,t,x.s==='off'?'':fmt(x.ms),x.s==='off'?'':Math.round(x.ms),{off:'',run:'running',stop:'stopped'}[x.s]])}return r}
+ const v=new Set(S.events.filter(e=>e.k==='void').map(e=>e.ref));
+ return [['time','event','discipline','category','team','id','removed']].concat(S.events.slice().sort((a,b)=>a.ts-b.ts).map(e=>[new Date(e.ts).toISOString(),e.k==='void'?'remove '+e.ref:e.k,e.d||'',e.c||'',e.t||'',e.id,v.has(e.id)?'yes':'']))}
+async function copyTxt(t){try{await navigator.clipboard.writeText(t);alert('Copied. Paste it into a sheet.')}catch{prompt('Copy this text:',t)}}
+
+app.addEventListener('click',async ev=>{const b=ev.target.closest('[data-a]');if(!b)return;const a=b.dataset.a,i=+b.dataset.i;
+ if(a==='tap')tap(i);
+ else if(a==='cat'){S.cat=i;save();render()}
+ else if(a==='start'){const d=disc(),c=cat();if(!startOf(live(),d,c.name)||confirm('Restart '+c.name+'? Times already recorded for this category will be ignored (kept in the log).'))add({k:'start',d,c:c.name})}
+ else if(a==='rm'){if(confirm('Remove this entry?'))add({k:'void',ref:b.dataset.id})}
+ else if(a==='copy')copyTxt(rows('res').map(r=>r.join('\t')).join('\n'));
+ else if(a==='csv'){const t=rows('log').map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(',')).join('\n'),l=document.createElement('a');
+  l.href=URL.createObjectURL(new Blob(['\ufeff'+t],{type:'text/csv'}));l.download='log-'+Date.now()+'.csv';l.click()}
+ else if(a==='def')fillForm(DEF);
+ else if(a==='cfg'){readForm();save();document.title=S.config.name||'Ranger stopwatch';
+  if(S.on&&S.ok){const pin=S.pin||prompt('PIN for changing the shared configuration:');if(pin===null)return;
+   try{await api('/config','PUT',{config:S.config,cid:S.cid},{'x-pin':pin});S.pin=pin;save()}catch(e){alert('Not saved on the server: '+e.message+'\nIt is saved on this device only.');return}}
+  location.hash=''}
+ else if(a==='cpy'){readForm();copyTxt(JSON.stringify(S.config))}
+ else if(a==='imp'){const t=prompt('Paste configuration:');if(t)try{const c=JSON.parse(t);if(!c.cats||!c.discs)throw 0;fillForm(c)}catch{alert('That is not a valid configuration.')}}
+ else if(a==='gen'){const A='abcdefghjkmnpqrstuvwxyz23456789';$('#f_k').value=Array.from(crypto.getRandomValues(new Uint8Array(12)),x=>A[x%A.length]).join('')}
+ else if(a==='con'){readForm();if(!S.server||S.secret.length<6)return alert('Enter a server URL and a secret (at least 6 characters).');save();connect()}
+ else if(a==='dis'){S.on=false;S.ok=false;es&&es.close();save();status(0)}});
+
+function render(){const h=location.hash;app.innerHTML='';$('#ttl').textContent=S.config.name||'Ranger stopwatch';
+ h==='#setup'?setup():h.startsWith('#d/')?sw():home();status(S.msg)}
+addEventListener('hashchange',render);render();if(S.on)connect();
+</script></body></html>
