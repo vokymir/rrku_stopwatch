@@ -1,13 +1,15 @@
 <!DOCTYPE html>
 <html lang="cs" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ranger stopky</title>
+<title>Ranger Hub</title>
+<meta name="theme-color" content="#17306b">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 3h24v14c0 7-12 12-12 12S4 24 4 17z' fill='%2317306b'/%3E%3Cpath d='M16 7l2.5 5.5 6 .7-4.4 4.1 1.2 6L16 20.4l-5.3 2.9 1.2-6-4.4-4.1 6-.7z' fill='%23f2b705'/%3E%3C/svg%3E">
 <style>
-	:root{--bg:#f3f1e8;--fg:#1a2a1f;--card:#fff;--ac:#1f5a34;--gold:#d9a420;--bd:#cfc9b3;--run:#ffd24a;--runfg:#2a2000;--ice:#d4ecff;--icefg:#0b3b66;--warn:#b3302a}
-	[data-theme=dark]{--bg:#111713;--fg:#e8efe6;--card:#1b241e;--ac:#44a86e;--bd:#33423a;--run:#d9a900;--ice:#17314a;--icefg:#bfe3ff;--warn:#ff8a80}
+	:root{--bg:#f4f2ee;--fg:#14213d;--card:#fff;--ac:#17306b;--gold:#f2b705;--bd:#d6d2c8;--run:#f2b705;--runfg:#2a2000;--ice:#d4ecff;--icefg:#0b3b66;--warn:#c8102e}
+	[data-theme=dark]{--bg:#0e1426;--fg:#eef1f8;--card:#172042;--ac:#3f6fd1;--bd:#2b3763;--run:#f2b705;--ice:#17314a;--icefg:#bfe3ff;--warn:#e03a50}
 	*{box-sizing:border-box}
 	body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
-	header{background:var(--ac);color:#fff;border-bottom:4px solid var(--gold);position:sticky;top:0;z-index:5;padding:8px 10px}
+	header{background:var(--ac);color:#fff;border-bottom:4px solid var(--gold);box-shadow:0 4px 0 var(--warn);position:sticky;top:0;z-index:5;padding:8px 10px}
 	header h1{font-size:1rem;margin:0 0 6px}
 	nav{display:flex;gap:6px;overflow-x:auto;align-items:center}
 	nav a,nav button{color:#fff;text-decoration:none;border:1px solid #ffffff66;border-radius:8px;padding:6px 10px;white-space:nowrap;background:transparent;font:inherit}
@@ -33,9 +35,11 @@
 	.ice{background:var(--ice);color:var(--icefg);padding:10px;border-radius:10px;font-weight:600;margin:8px 0;text-align:center}
 	.frozen .g{filter:saturate(.4)}
 	.ev{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd);font-size:.85rem}.ev span{flex:1}.ev button{padding:4px 8px}
+	.card{background:var(--card);border:1px solid var(--bd);border-left:6px solid var(--gold);border-radius:10px;padding:12px;margin:8px 0}.card small{display:block;opacity:.75;word-break:break-all;margin-bottom:6px}.card .row{margin:6px 0 0}
 	.gone{opacity:.4;text-decoration:line-through}.msg{color:var(--warn)}
 </style></head><body>
-	<header><h1 id="ttl">Ranger stopky</h1><nav id="nav"></nav></header>
+	<header><h1 id="ttl">Ranger Hub</h1><nav id="nav"></nav></header>
 	<main id="app"></main>
+	<noscript>Pro běh aplikace je potřeba JavaScript.</noscript>
 	<script src="app.js"></script>
 </body></html>

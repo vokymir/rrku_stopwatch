@@ -17,10 +17,16 @@ const LABEL = { start: 'Start', tstop: 'Čas zastaven', tresume: 'Čas pokračuj
 class Store {
   static KEY = 'rr2';
   static load() {
-    const d = { theme: 'light', server: 'http://localhost:5555', secret: '', nick: '', on: false, tokens: {}, cid: uid(), off: 0, cat: 0, config: { name: 'Ranger roku', cats: [], discs: [] }, users: {}, events: [] };
+    const d = { theme: 'light', server: 'http://localhost:5555', secret: '', nick: '', on: false, cur: 'local', hist: {}, public: false, tokens: {}, cid: uid(), off: 0, cat: 0, config: { name: 'Ranger roku', cats: [], discs: [] }, users: {}, events: [] };
     try { return { ...d, ...JSON.parse(localStorage.getItem(Store.KEY) || '{}') }; } catch { return d; }
   }
-  static save() { try { localStorage.setItem(Store.KEY, JSON.stringify(S)); } catch { alert('Paměť prohlížeče je plná, data nelze uložit.'); } }
+  static save() {
+    Hist.touch();
+    for (;;) {
+      try { localStorage.setItem(Store.KEY, JSON.stringify(S)); return; }
+      catch { if (!Hist.evict()) { alert('Paměť prohlížeče je plná, data nelze uložit.'); return; } }
+    }
+  }
 }
 let S = Store.load();
 
@@ -81,33 +87,59 @@ class DoubleTap {
   static disarm() { DoubleTap.key = null; clearTimeout(DoubleTap.timer); App.render(); }
 }
 
+/* Historie soutěží: odkazy a přezdívka zůstávají vždy, data jen dokud je v prohlížeči místo. */
+class Hist {
+  static key(t = S) { return t.server.replace(/\/$/, '') + '|' + t.secret; }
+  static touch() {
+    const e = S.hist[S.cur] || (S.hist[S.cur] = {});
+    Object.assign(e, { name: S.config.name, last: Date.now() });
+    if (S.cur !== 'local') Object.assign(e, { server: S.server, secret: S.secret, nick: S.nick });
+  }
+  static stash() { Hist.touch(); S.hist[S.cur].data = { config: S.config, users: S.users, events: S.events }; }
+  static load(key) {
+    const e = S.hist[key], d = e && e.data;
+    S.config = d ? d.config : { name: 'Nová soutěž', cats: [], discs: [] }; S.users = d ? d.users : {}; S.events = d ? d.events : [];
+    if (e) delete e.data;
+  }
+  static evict() {
+    const k = Object.keys(S.hist).filter(x => S.hist[x].data).sort((a, b) => S.hist[a].last - S.hist[b].last)[0];
+    if (!k) return false;
+    delete S.hist[k].data; return true;
+  }
+}
+
 class Sync {
   static es = null;
-  static url(p = '') { return S.server.replace(/\/$/, '') + '/api/c/' + encodeURIComponent(S.secret) + p; }
-  static tok() { return S.tokens[Sync.url()] || ''; }
-  static async call(p, method = 'GET', body) {
+  static url(p = '', t = S) { return t.server.replace(/\/$/, '') + '/api/c/' + encodeURIComponent(t.secret) + p; }
+  static tok(t = S) { return S.tokens[Sync.url('', t)] || ''; }
+  static async call(p, method = 'GET', body, t = S) {
     let r;
-    try { r = await fetch(Sync.url(p), { method, headers: { 'content-type': 'application/json', 'x-token': Sync.tok() }, body: body ? JSON.stringify(body) : undefined }); }
+    try { r = await fetch(Sync.url(p, t), { method, headers: { 'content-type': 'application/json', 'x-token': Sync.tok(t) }, body: body ? JSON.stringify(body) : undefined }); }
     catch { throw new Error('Server není dostupný.'); }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'Chyba ' + r.status);
     return j;
   }
-  static async connect() {
-    const h = await Sync.call('/head'), hadTok = !!Sync.tok();
-    if (h.exists && !hadTok && (S.events.length || S.config.discs.length) && S.pending !== Sync.url()) {
-      S.pending = Sync.url();
-      return 'Soutěž s tímto heslem už existuje. Připojíte se jako divák a data v tomto zařízení budou nahrazena. Pro potvrzení klikněte znovu na Připojit.';
-    }
-    const j = await Sync.call('/join', 'POST', { nick: S.nick, token: Sync.tok(), config: S.config, events: S.events });
-    S.tokens[Sync.url()] = j.token; S.on = true;
-    if (!j.created && !hadTok) S.events = [];
+  static async connect(t, create) {
+    const h = await Sync.call('/head', 'GET', null, t), key = Hist.key(t);
+    if (!h.exists && !create) throw new Error('Soutěž na serveru už neexistuje.');
+    const mig = !h.exists && S.cur === 'local', blank = { name: 'Nová soutěž', cats: [], discs: [] };
+    const j = await Sync.call('/join', 'POST', { nick: t.nick, token: Sync.tok(t), config: mig ? S.config : blank, events: mig ? S.events : [] }, t);
+    S.tokens[Sync.url('', t)] = j.token;
+    if (Sync.es) Sync.es.close();
+    if (S.cur !== key) { if (mig) delete S.hist.local; else Hist.stash(); S.cur = key; if (!mig) Hist.load(key); }
+    Object.assign(S, { server: t.server, secret: t.secret, nick: t.nick, on: true });
     await Sync.pull(); Sync.stream();
-    return j.created ? 'Soutěž vytvořena, jste správce.' : 'Připojeno k existující soutěži.';
+    return j.created ? 'Soutěž vytvořena, jste správce.' : 'Připojeno k soutěži.';
+  }
+  static async publicList(server) {
+    let r; try { r = await fetch(server.replace(/\/$/, '') + '/api/public'); } catch { throw new Error('Server není dostupný.'); }
+    if (!r.ok) throw new Error('Server nenabízí seznam soutěží.');
+    return (await r.json()).list;
   }
   static async pull() {
     const j = await Sync.call('');
-    S.off = j.now - Date.now(); S.config = j.config; S.users = j.users; Sync.merge(j.events); Store.save();
+    S.off = j.now - Date.now(); S.config = j.config; S.users = j.users; S.public = !!j.public; Sync.merge(j.events); Store.save();
   }
   static merge(evs) {
     const ids = new Set(S.events.map(e => e.id)); let n = 0;
@@ -157,7 +189,7 @@ class Views {
     const { d, c } = x, clk = new Clock(S.events, d.name, c.name), frozen = Clock.frozen(S.events, d.name, c.name);
     const ref = Perms.referee(d) && !frozen, n = Date.now() + S.off, st = clk.state(), ctl = st === 'idle' || App.ui.show;
     const tabs = S.config.cats.map((k, j) => `<button class="${j === S.cat ? 'on' : ''}" data-a="cat" data-i="${j}">${esc(k.name)}</button>`).join('');
-    const ice = frozen ? '<div class="ice">❄ Výsledky této kategorie jsou zmrazené. Ledová hlídka drží pozice.</div>' : '';
+    const ice = frozen ? '<div class="ice">❄ Výsledky této kategorie jsou zmrazené.</div>' : '';
     const controls = !ref ? '' : `<div class="row">${st === 'idle' ? '<button class="p" data-a="start">Start</button>' :
       `<button data-a="toggle">${ctl ? 'Skrýt ovládání' : 'Zobrazit ovládání'}</button>` +
       (ctl ? (st === 'run' ? Views.dbtn('tstop', 'Stop') : Views.dbtn('tresume', 'Pokračovat')) + Views.dbtn('restart', 'Restart') : '')}</div>`;
@@ -181,8 +213,29 @@ class Views {
   }
   static roles(d) {
     if (!S.on || !Perms.discAdmin(d)) return '';
-    const opts = n => { const r = (d.roles || {})[n] || ''; return `<option value="">Divák</option><option value="referee" ${r === 'referee' ? 'selected' : ''}>Rozhodčí</option><option value="admin" ${r === 'admin' ? 'selected' : ''} ${Perms.admin() ? '' : 'disabled'}>Správce disciplíny</option>`; };
-    return '<h2>Role v této disciplíně</h2>' + Object.keys(S.users).filter(n => !S.users[n].admin).map(n => `<label>${esc(n)}<select data-a="role" data-n="${esc(n)}">${opts(n)}</select></label>`).join('');
+    const sel = n => {
+      const r = (d.roles || {})[n] || '', lock = n === S.nick || (r === 'admin' && !Perms.admin());
+      return `<select data-a="role" data-n="${esc(n)}" ${lock ? 'disabled' : ''}><option value="">Divák</option><option value="referee" ${r === 'referee' ? 'selected' : ''}>Rozhodčí</option><option value="admin" ${r === 'admin' ? 'selected' : ''} ${Perms.admin() ? '' : 'disabled'}>Správce disciplíny</option></select>`;
+    };
+    const rows = Object.keys(S.users).map(n => S.users[n].admin ? `<label>${esc(n)}<small>správce soutěže (má všechna práva)</small></label>`
+      : `<label>${esc(n)}${n === S.nick ? '<small>svou roli nemůžete měnit</small>' : ''}${sel(n)}</label>`).join('');
+    return '<h2>Role v této disciplíně</h2>' + rows;
+  }
+  static contests() {
+    const rows = Object.entries(S.hist).sort((a, b) => b[1].last - a[1].last).map(([k, e]) => {
+      const cur = k === S.cur, info = k === 'local' ? 'Jen v tomto zařízení' : esc(e.server) + ' · heslo ' + esc(e.secret) + ' · ' + esc(e.nick);
+      return `<div class="card"><b>${esc(e.name || 'Soutěž')}</b><small>${info}${e.data ? ' · místní kopie uložena' : ''}</small><div class="row">
+        ${cur ? '<button disabled>Právě otevřená</button>' : `<button class="p" data-a="open" data-k="${esc(k)}">Otevřít</button>`}
+        ${!cur && e.data ? `<button data-a="hdata" data-k="${esc(k)}">Smazat data</button>` : ''}${cur ? '' : Views.dbtn('hdel:' + k, 'Smazat vše')}</div></div>`;
+    }).join('') || '<p>Zatím jste žádnou soutěž neotevřeli.</p>';
+    const pubs = (App.ui.pubs || []).map(p => `<div class="card"><b>${esc(p.name || 'Soutěž')}</b><small>počet uživatelů: ${p.users}</small><button class="p" data-a="joinpub" data-s="${esc(p.secret)}">Připojit se</button></div>`).join('');
+    return `<h2 style="margin-top:0">Moje soutěže</h2>${rows}${S.hist.local ? '' : '<button data-a="newlocal">Nová místní soutěž (bez serveru)</button>'}
+      <p class="msg">${esc(App.ui.msg || '')}</p>
+      <h2>Veřejné soutěže na serveru</h2>
+      <label>Adresa serveru<input id="f_ps" value="${esc(App.ui.ps || S.server)}"></label>
+      <label>Vaše přezdívka<input id="f_pn" maxlength="24" value="${esc(App.ui.pn != null ? App.ui.pn : S.nick)}" placeholder="např. Vlčí stopa"></label>
+      <button data-a="pub">Načíst veřejné soutěže</button>${pubs}
+      <p>Vlastní soutěž založíte na stránce <a href="#server">Server</a>.</p>`;
   }
   static cats() {
     if (!Perms.admin()) return '<p>Kategorie může upravovat jen správce.</p>';
@@ -195,12 +248,13 @@ class Views {
   static server() {
     const on = S.on, dis = on ? 'disabled' : '';
     const users = on && Perms.admin() ? '<h2>Uživatelé</h2>' + Object.keys(S.users).map(n => `<label><input type="checkbox" style="width:auto" data-a="uadm" data-n="${esc(n)}" ${S.users[n].admin ? 'checked' : ''} ${n === S.nick ? 'disabled' : ''}> ${esc(n)} (správce)</label>`).join('') : '';
-    return `<label>Adresa serveru<input id="f_s" value="${esc(S.server)}" ${dis}></label>${on ? '' : '<button data-a="here">Vyplnit adresu této stránky</button>'}
-      <label>Heslo soutěže<small>Libovolný řetězec o 6 až 12 znacích. Kdo ho zná, může se připojit.</small><input id="f_k" maxlength="12" value="${esc(S.secret)}" ${dis}></label>
+    return `<label>Adresa serveru<input id="f_s" value="${esc((App.ui.f || S).server)}" ${dis}></label>${on ? '' : '<button data-a="here">Vyplnit adresu této stránky</button>'}
+      <label>Heslo soutěže<small>Libovolný řetězec o 6 až 12 znacích. Kdo ho zná, může se připojit.</small><input id="f_k" maxlength="12" value="${esc((App.ui.f || S).secret)}" ${dis}></label>
       ${on ? '' : '<button data-a="gen">Vygenerovat náhodné heslo (můžete ho přepsat čímkoli)</button>'}
-      <label>Přezdívka na serveru<small>Na serveru musí být jedinečná.</small><input id="f_nick" maxlength="24" value="${esc(S.nick)}" placeholder="např. Vlčí stopa" ${dis}></label>
+      <label>Přezdívka na serveru<small>Na serveru musí být jedinečná.</small><input id="f_nick" maxlength="24" value="${esc((App.ui.f || S).nick)}" placeholder="např. Vlčí stopa" ${dis}></label>
       <p class="msg">${esc(App.ui.msg || '')}</p>
       <div class="row">${on ? '<button data-a="disc">Odpojit</button>' + (Perms.admin() ? Views.dbtn('delete', 'Smazat soutěž na serveru') : '') : '<button class="p" data-a="conn">Připojit</button>'}</div>
+      ${on && Perms.admin() ? `<label><input type="checkbox" style="width:auto" data-a="pubtog" ${S.public ? 'checked' : ''}> Veřejná soutěž (zobrazí se v nabídce soutěží tohoto serveru)</label>` : ''}
       <p>Soutěže, ke kterým se nikdo měsíc nepřipojil, server automaticky smaže.</p>${users}`;
   }
   static io() {
@@ -220,6 +274,7 @@ class Actions {
     else if (a === 'restart') App.emit({ k: 'start' });
     else if (a === 'team') App.emit({ k: 'resume', t });
     else if (a === 'unfreeze') App.emit({ k: 'unfreeze' });
+    else if (a === 'hdel') { delete S.hist[t]; Store.save(); App.render(); }
     else if (a === 'delete') Sync.call('', 'DELETE').then(() => Sync.disconnect()).catch(e => { App.ui.msg = e.message; App.render(); });
   }
   static start() { App.emit({ k: 'start' }); }
@@ -232,11 +287,37 @@ class Actions {
   static here() { $('#f_s').value = location.origin; }
   static gen() { const A = 'abcdefghjkmnpqrstuvwxyz23456789'; $('#f_k').value = Array.from(crypto.getRandomValues(new Uint8Array(10)), v => A[v % A.length]).join(''); }
   static async conn() {
-    S.server = $('#f_s').value.trim(); S.secret = $('#f_k').value.trim(); S.nick = $('#f_nick').value.trim();
-    if (!S.server || !/^[\w-]{6,12}$/.test(S.secret) || !S.nick) { App.ui.msg = 'Vyplňte adresu, heslo (6 až 12 znaků: písmena, číslice, _ -) a přezdívku.'; return App.render(); }
-    try { App.ui.msg = await Sync.connect(); } catch (e) { App.ui.msg = e.message; }
+    const t = { server: $('#f_s').value.trim(), secret: $('#f_k').value.trim(), nick: $('#f_nick').value.trim() };
+    App.ui.f = t;
+    if (!t.server || !/^[\w-]{6,12}$/.test(t.secret) || !t.nick) { App.ui.msg = 'Vyplňte adresu, heslo (6 až 12 znaků: písmena, číslice, _ -) a přezdívku.'; return App.render(); }
+    try { App.ui.msg = await Sync.connect(t, true); App.ui.f = null; } catch (e) { App.ui.msg = e.message; }
     Store.save(); App.render();
   }
+  static async open(b) {
+    const key = b.dataset.k, e = S.hist[key];
+    if (!e) return;
+    if (Sync.es) Sync.es.close();
+    if (key !== S.cur) { Hist.stash(); Hist.load(key); S.cur = key; if (e.secret) Object.assign(S, { server: e.server, secret: e.secret, nick: e.nick }); }
+    S.on = false; App.ui.ok = false;
+    let msg = '';
+    if (e.secret) { try { await Sync.connect({ server: e.server, secret: e.secret, nick: e.nick }, false); } catch (err) { msg = err.message + ' Otevřena místní kopie.'; } }
+    App.ui.msg = msg; Store.save(); location.hash = msg ? '#hist' : ''; App.render();
+  }
+  static hdata(b) { delete S.hist[b.dataset.k].data; Store.save(); App.render(); }
+  static newlocal() { S.hist.local = { name: 'Nová soutěž', last: Date.now() }; Actions.open({ dataset: { k: 'local' } }); }
+  static async pub() {
+    App.ui.ps = $('#f_ps').value.trim(); App.ui.pn = $('#f_pn').value.trim();
+    try { App.ui.pubs = await Sync.publicList(App.ui.ps); App.ui.msg = App.ui.pubs.length ? '' : 'Na tomto serveru nejsou žádné veřejné soutěže.'; }
+    catch (e) { App.ui.pubs = []; App.ui.msg = e.message; }
+    App.render();
+  }
+  static async joinpub(b) {
+    const nick = $('#f_pn').value.trim(); App.ui.pn = nick;
+    if (!nick) { App.ui.msg = 'Zadejte přezdívku.'; return App.render(); }
+    try { await Sync.connect({ server: App.ui.ps, secret: b.dataset.s, nick }, false); App.ui.msg = ''; location.hash = ''; } catch (e) { App.ui.msg = e.message; }
+    Store.save(); App.render();
+  }
+  static async pubtog(b) { try { await Sync.call('/public', 'POST', { public: b.checked }); S.public = b.checked; } catch (e) { alert(e.message); b.checked = !b.checked; } }
   static disc() { Sync.disconnect(); }
   static addd() {
     const name = $('#f_nd').value.trim();
@@ -292,19 +373,19 @@ class App {
   static status() { const e = $('#st'); if (e) e.textContent = S.on ? (App.ui.ok ? '● online' : '○ offline') : 'jen v zařízení'; }
   static nav() {
     const h = location.hash, link = (hr, t, on) => `<a href="${hr}" class="${on ? 'on' : ''}">${t}</a>`;
-    return link('#', 'Disciplíny', !/^#(kat|server|io)/.test(h)) + (Perms.admin() ? link('#kat', 'Kategorie', h === '#kat') : '') +
+    return link('#hist', 'Soutěže', h === '#hist') + link('#', 'Disciplíny', !/^#(hist|kat|server|io)/.test(h)) + (Perms.admin() ? link('#kat', 'Kategorie', h === '#kat') : '') +
       link('#server', 'Server', h === '#server') + link('#io', 'Export / import', h === '#io') +
       `<span id="st"></span><button data-a="theme">${S.theme === 'dark' ? '☀' : '☾'}</button>`;
   }
   static render() {
     document.documentElement.dataset.theme = S.theme;
-    $('#ttl').textContent = S.config.name || 'Ranger stopky';
+    $('#ttl').textContent = S.config.name || 'Ranger Hub';
     $('#nav').innerHTML = App.nav();
     const h = location.hash;
-    $('#app').innerHTML = h === '#server' ? Views.server() : h === '#kat' ? Views.cats() : h === '#io' ? Views.io() : h.startsWith('#d/') ? Views.discipline() : Views.disciplines();
+    $('#app').innerHTML = h === '#hist' ? Views.contests() : h === '#server' ? Views.server() : h === '#kat' ? Views.cats() : h === '#io' ? Views.io() : h.startsWith('#d/') ? Views.discipline() : (S.on || S.config.discs.length ? Views.disciplines() : Views.contests());
     App.status();
   }
-  static draw() { if (!['#server', '#kat', '#io'].includes(location.hash)) App.render(); }
+  static draw() { if (!['#hist', '#server', '#kat', '#io'].includes(location.hash)) App.render(); }
   static tick() {
     const x = App.ctx(); if (!x) return;
     const clk = new Clock(S.events, x.d.name, x.c.name), n = Date.now() + S.off, e = $('#clk');

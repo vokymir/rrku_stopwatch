@@ -45,7 +45,7 @@ const validSecret = s => /^[\w-]{6,12}$/.test(s);
 
 class Handlers {
   static head(c) { return [200, { exists: !!c }]; }
-  static state(c) { return [200, { config: c.config, users: publicUsers(c), events: c.events, now: Date.now() }]; }
+  static state(c) { return [200, { config: c.config, users: publicUsers(c), events: c.events, now: Date.now(), public: !!c.public }]; }
 
   static join(s, c, b) {
     const nick = String(b.nick || '').trim();
@@ -71,6 +71,7 @@ class Handlers {
   }
 
   static role(s, c, me, b) {
+    if (b.nick === me) return [400, { error: 'Nemůžete měnit vlastní roli.' }];
     if (!b.d) {
       if (!Perms.admin(c, me) || !c.users[b.nick]) return [403, { error: 'Nedostatečná práva.' }];
       c.users[b.nick].admin = !!b.admin; repo.save(); hub.send(s, null, { type: 'users', users: publicUsers(c) });
@@ -79,6 +80,7 @@ class Handlers {
     const D = c.config.discs.find(x => x.name === b.d), r = b.role || '';
     if (!D || !c.users[b.nick] || !['', 'referee', 'admin'].includes(r)) return [400, { error: 'Neplatný požadavek.' }];
     if (!Perms.discAdmin(c, b.d, me) || (r === 'admin' && !Perms.admin(c, me))) return [403, { error: 'Nedostatečná práva.' }];
+    if (Perms.role(c, b.d, b.nick) === 'admin' && !Perms.admin(c, me)) return [403, { error: 'Správce disciplíny může měnit jen správce soutěže.' }];
     D.roles = D.roles || {}; r ? (D.roles[b.nick] = r) : delete D.roles[b.nick];
     repo.save(); hub.send(s, null, { type: 'config', config: c.config });
     return [200, { ok: 1 }];
@@ -93,6 +95,12 @@ class Handlers {
     }
     if (added.length) { repo.save(); hub.send(s, b.cid, { type: 'events', events: added }); }
     return [200, { added: added.length, rejected }];
+  }
+
+  static list() { return Object.entries(repo.db).filter(([, c]) => c.public).map(([secret, c]) => ({ secret, name: c.config.name, users: Object.keys(c.users).length })); }
+  static publish(s, c, me, b) {
+    if (!Perms.admin(c, me)) return [403, { error: 'Jen správce může změnit viditelnost soutěže.' }];
+    c.public = !!b.public; repo.save(); return [200, { ok: 1 }];
   }
 
   static remove(s, c, me) {
@@ -122,6 +130,7 @@ class Router {
   static handle(req, res) {
     const u = new URL(req.url, 'http://x');
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
+    if (u.pathname === '/api/public') return json(res, 200, { list: Handlers.list() });
     const m = u.pathname.match(/^\/api\/c\/([^/]+)(?:\/(\w+))?$/);
     if (!m) return Router.serveStatic(u.pathname, res);
     const s = decodeURIComponent(m[1]), sub = m[2] || '', c = repo.get(s);
@@ -144,6 +153,7 @@ class Router {
     if (!sub && method === 'GET') return Handlers.state(c);
     if (!sub && method === 'DELETE') return Handlers.remove(s, c, me);
     if (sub === 'config' && method === 'POST') return Handlers.config(s, c, me, b);
+    if (sub === 'public' && method === 'POST') return Handlers.publish(s, c, me, b);
     if (sub === 'role' && method === 'POST') return Handlers.role(s, c, me, b);
     if (sub === 'events' && method === 'POST') return Handlers.events(s, c, me, b);
     return [404, { error: 'Neznámá cesta.' }];
